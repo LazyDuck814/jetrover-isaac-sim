@@ -17,6 +17,7 @@ JetRover가 실내를 탐색해 빨간 큐브를 찾고, 집어서 출발 위치
 ![JetRover 시스템 흐름도. 실시간 지도 작성과 탐색, YOLO26n 검출, Depth 기반 정렬과 접근, SmolVLA 집기, Nav2 복귀와 내려놓기](media/system-workflow.png)
 
 <br>
+
 ### 1. 지도 작성과 탐색 주행
 
 SLAM Toolbox가 라이다 스캔과 로봇의 이동 정보를 이용해 주행 중 2D 지도를 갱신합니다. `frontier_exploration_ros2`는 관측된 빈 공간과 미관측 공간이 맞닿는 경계에서 다음 탐색 목표를 선택합니다. Nav2는 그 목표까지 코스트맵과 차체 외곽을 고려해 경로를 계산하고, 경로를 따라갈 속도 명령을 생성합니다.
