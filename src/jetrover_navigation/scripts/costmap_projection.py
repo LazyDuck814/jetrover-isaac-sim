@@ -1,4 +1,4 @@
-"""Conservative 2D grid projection into an axis-aligned map grid, without ROS."""
+"""Project costmap cells onto the map-aligned grid."""
 
 import math
 

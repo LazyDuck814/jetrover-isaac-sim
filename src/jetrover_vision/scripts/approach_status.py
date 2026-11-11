@@ -22,20 +22,21 @@ def adapt_status(
     if not box or len(box) != 4 or width <= 0:
         result["found"] = False
         return result
-    # Same grasp_x, center-margin and left/center/right rule as the source detector.
     grasp_x = int(round((box[0] + box[2]) / 2))
+    image_center = width // 2
     center_margin = int(width * center_margin_ratio)
     result["grasp_x"] = grasp_x
-    result["direction"] = (
-        "left"
-        if grasp_x < width // 2 - center_margin
-        else "right" if grasp_x > width // 2 + center_margin else "center"
-    )
+    if grasp_x < image_center - center_margin:
+        result["direction"] = "left"
+    elif grasp_x > image_center + center_margin:
+        result["direction"] = "right"
+    else:
+        result["direction"] = "center"
     point = source.get("target_xyz_camera")
     if source.get("depth_valid") and point and len(point) == 3:
         distance = float(point[2])
         if math.isfinite(distance) and distance > 0:
-            # Keep the real localizer's configured +3cm offset and 0.35m rule.
+            # Match the real-robot localizer's depth offset.
             distance += 0.03
             result.update(
                 depth_valid=True,
@@ -44,7 +45,7 @@ def adapt_status(
                 and result["direction"] == "center",
             )
     if target_x is not None:
-        # SmolVLA handover distance is in base_link, not camera optical Z.
+        # The grasp handover uses forward distance in the robot frame.
         base = source.get("target_xyz_base")
         valid = (
             source.get("base_valid") is True

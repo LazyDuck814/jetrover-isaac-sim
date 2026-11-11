@@ -1,4 +1,4 @@
-"""Pure event-driven mission sequence. No ROS or robot model dependency."""
+"""Mission transitions and velocity selection for each phase."""
 
 import math
 
@@ -122,8 +122,7 @@ class Mission:
             return ["navigation_velocity"]
         if kind == "stop_navigation":
             self.stop_ack = True
-            # Require an IDLE publication AFTER the stop service reply, not
-            # an old/latched IDLE received during discovery or before cancel.
+            # Accept only an IDLE received after the stop service reply.
             self.idle_after_stop = False
             return self.handover()
         self.state = "RETURNING_HOME"
@@ -174,8 +173,7 @@ class Mission:
             return ["hold"]
         if kind == "grasp":
             self.place_after_home = True
-            # The policy already includes lift and arm return. Keep its final
-            # joint targets; do not run another arm HOME trajectory here.
+            # Keep the policy's final arm targets during the drive home.
             self.state = "REQUESTING_HOME"
             return ["hold", "return_home"]
         self.state = "REQUESTING_HOME"

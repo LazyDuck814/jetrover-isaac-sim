@@ -48,7 +48,6 @@ def register_depth(
         rows = np.rint(projected[:, 1] / projected[:, 2]).astype(int)
         inside = (cols >= 0) & (cols < width) & (rows >= 0) & (rows < height)
         pixel_indices = rows[inside] * width + cols[inside]
-        # When multiple depth samples project to one RGB pixel, retain the nearest.
         np.minimum.at(registered, pixel_indices, color_points[inside, 2])
     return registered.reshape(height, width)
 

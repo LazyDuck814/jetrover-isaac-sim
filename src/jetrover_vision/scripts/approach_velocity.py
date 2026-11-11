@@ -1,4 +1,4 @@
-"""Rate-limit velocity commands in simulation seconds (no ROS dependency)."""
+"""Rate-limit approach velocity using simulation time."""
 
 import math
 

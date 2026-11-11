@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upstream frontier control + HOME handover; no custom frontier goal selection."""
+"""Coordinate frontier exploration and return to the saved start pose."""
 import copy
 import json
 import math
@@ -127,7 +127,7 @@ class FrontierBridge(Node):
         self.retry_local()
 
     def retry_local(self):
-        # Keep original timestamps: retry deferred TF, never substitute latest TF.
+        # Retry TF at the original costmap timestamp.
         for msg in list(self.pending_local):
             if self.project_local(msg):
                 self.pending_local.remove(msg)
@@ -211,8 +211,7 @@ class FrontierBridge(Node):
         self.mode = "IDLE"
         self.external_idle = False
         self.cancel_own()
-        # HOME_REACHED/HOME_FAILED belong to the previous request. A new STOP
-        # must publish IDLE after cancellation, for the mission handover.
+        # Clear the previous status so this stop request gets a fresh IDLE.
         self.last_report = None
         response.success = True
         response.message = "Stop requested; wait for /navigation/state IDLE"
@@ -410,7 +409,6 @@ class FrontierBridge(Node):
         if self.local_wall is None or time.monotonic() - self.local_wall > 15:
             self.report("WAITING_PROJECTED_COSTMAP")
             return
-        # No wall following: obtain an initial sensor sweep before enabling upstream.
         if self.p["initial_spin"] and not self.spin_attempted:
             if not self.spin.server_is_ready():
                 self.report("WAITING_NAV2_SPIN")

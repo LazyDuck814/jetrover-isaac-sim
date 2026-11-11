@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isaac placement after navigation HOME; deterministic, no policy server required."""
+"""Lower and release the cube after the base returns home."""
 import argparse
 import json
 from pathlib import Path
@@ -132,8 +132,7 @@ def execute(config, log):
             ),
             flush=True,
         )
-        # Validate the actual alignment, not only the nominal HOME trajectory.
-        # Failure here sends no arm target. Runtime floor/tracking checks remain.
+        # Check the trajectory from the measured arm pose before commanding it.
         actual_audit = (
             audit(config, q)
             if config["environment"] == "isaac"

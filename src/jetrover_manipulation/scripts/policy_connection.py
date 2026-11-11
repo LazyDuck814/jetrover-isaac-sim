@@ -1,4 +1,4 @@
-"""HTTP startup handshake only; does not publish ROS commands."""
+"""Wait for the policy server and verify its inference settings."""
 
 import json
 from pathlib import Path

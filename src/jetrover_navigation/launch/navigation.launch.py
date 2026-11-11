@@ -1,7 +1,7 @@
-"""Isaac Sim online SLAM + Nav2. No manufacturer launch dependencies."""
+"""Start SLAM Toolbox and Nav2 for Isaac Sim."""
 
-import os
 import json
+import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -23,7 +23,6 @@ from lifecycle_msgs.msg import Transition
 
 def generate_launch_description():
     share = get_package_share_directory("jetrover_navigation")
-    # Official Jazzy data ships with nav2_smac_planner; no generated/custom driver.
     lattice = os.path.join(
         get_package_share_directory("nav2_smac_planner"),
         "sample_primitives",
@@ -78,7 +77,7 @@ def generate_launch_description():
             transition_id=Transition.TRANSITION_CONFIGURE,
         )
     )
-    # Every velocity producer goes through the SAME smoother. The USD expects Twist.
+    # Controller and recovery commands share the smoother. Isaac expects Twist.
     servers = [
         (
             "nav2_controller",
@@ -98,27 +97,25 @@ def generate_launch_description():
             ],
         ),
     ]
-    nodes = [
-        Node(
-            package=pkg,
-            executable=name,
-            name=name,
-            output="screen",
-            parameters=[params, sim]
-            + (
-                [{"default_nav_to_pose_bt_xml": LaunchConfiguration("bt_xml")}]
-                if name == "bt_navigator"
-                else []
+    server_overrides = {
+        "bt_navigator": {"default_nav_to_pose_bt_xml": LaunchConfiguration("bt_xml")},
+        "planner_server": {"GridBased.lattice_filepath": lattice},
+    }
+    nodes = []
+    for package, name, remappings in servers:
+        parameters = [params, sim]
+        if name in server_overrides:
+            parameters.append(server_overrides[name])
+        nodes.append(
+            Node(
+                package=package,
+                executable=name,
+                name=name,
+                output="screen",
+                parameters=parameters,
+                remappings=remappings,
             )
-            + (
-                [{"GridBased.lattice_filepath": lattice}]
-                if name == "planner_server"
-                else []
-            ),
-            remappings=remaps,
         )
-        for pkg, name, remaps in servers
-    ]
     manager = Node(
         package="nav2_lifecycle_manager",
         executable="lifecycle_manager",

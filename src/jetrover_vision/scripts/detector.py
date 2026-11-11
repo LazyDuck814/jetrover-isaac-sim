@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Latest-frame YOLO inference; never publishes motion commands."""
+"""Detect the target in the latest RGB frame and estimate its 3D position."""
 from collections import deque
 from pathlib import Path
 from ament_index_python.packages import (
@@ -30,8 +30,7 @@ def default_model_path():
     try:
         share = Path(get_package_share_directory("jetrover_vision"))
     except PackageNotFoundError:
-        # Direct source execution before colcon build; explicit ROS parameters
-        # still override this default during declare_parameter.
+        # Support direct execution before the package is built.
         share = Path(__file__).resolve().parents[1]
     return str(share / "weights" / "best.pt")
 
@@ -205,9 +204,8 @@ class Detector(Node):
         annotated = result.plot()
         age = (self.get_clock().now().nanoseconds * 1e-9) - stamp_seconds(msg)
         with self.lock:
-            reset = generation != self.generation
-        if reset:
-            return
+            if generation != self.generation:
+                return
         stale = (
             age < -self.p["sync_slop_sec"] or age > self.p["max_observation_age_sec"]
         )
@@ -231,8 +229,8 @@ class Detector(Node):
             "target_xyz_base": None,
             "reason": "no_detection",
         }
-        if result.boxes is not None and len(result.boxes):
-            boxes = result.boxes
+        boxes = result.boxes
+        if boxes is not None and len(boxes):
             index = int(boxes.conf.argmax().item())
             box = boxes.xyxy[index].cpu().numpy().tolist()
             status.update(
@@ -254,15 +252,18 @@ class Detector(Node):
         with self.lock:
             if generation != self.generation:
                 return
+        self.publish_detection(msg.header, annotated, status)
+
+    def publish_detection(self, header, annotated, status):
         output = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
-        output.header = msg.header
+        output.header = header
         self.image_pub.publish(output)
         ok, jpeg = cv2.imencode(
             ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, self.p["jpeg_quality"]]
         )
         if ok:
             compressed = CompressedImage()
-            compressed.header = msg.header
+            compressed.header = header
             compressed.format = "bgr8; jpeg compressed bgr8"
             compressed.data = jpeg.tobytes()
             self.jpeg_pub.publish(compressed)
@@ -272,8 +273,7 @@ class Detector(Node):
 
     def localize(self, rgb, shape, box, status):
         try:
-            # RGB and depth callbacks arrive independently. Wait in the inference
-            # worker, never in the ROS executor that receives the needed depth.
+            # Wait in the worker so the ROS executor can receive depth frames.
             deadline = time.monotonic() + self.p["depth_wait_wall_sec"]
             rgb_stamp = stamp_seconds(rgb)
             while True:
@@ -348,7 +348,7 @@ class Detector(Node):
                 self.p["base_frame"], rgb.header.frame_id, rgb.header.stamp
             )
             point_base = to_base[:3, :3] @ point + to_base[:3, 3]
-            # Waiting/TF work may make a formerly fresh observation stale.
+            # Depth and TF lookup can outlast the observation's age limit.
             age = self.get_clock().now().nanoseconds * 1e-9 - rgb_stamp
             status["age_sec"] = float(age)
             if (

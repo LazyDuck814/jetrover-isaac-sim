@@ -1,4 +1,4 @@
-"""Baseline50 Hermite return reversed for lowering; no ROS imports."""
+"""Lower the arm along the reversed Baseline50 return trajectory."""
 
 import numpy as np
 
@@ -48,8 +48,7 @@ def segments(config, actual):
 
     home = pose(path.sample(1.0), held)
     low = pose(path.sample(0.0), held)
-    # Quintic ease has maximum derivative 1.875. Allow a slow alignment
-    # from the measured policy end pose instead of assuming exact HOME.
+    # The quintic interpolation peaks at 1.875 times the average speed.
     speed = float(config.get("align_max_speed_rad_s", 0.25))
     if not np.isfinite(speed) or speed <= 0:
         raise ValueError("Invalid carry alignment speed")

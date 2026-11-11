@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""SmolVLA ROS Jazzy client. Default: one inference, NO arm commands.
+"""Run a live SmolVLA inference check or a grasp trial with --execute."""
 
---execute enables one bounded trial from HOME. Run with simulation playing.
-This is an experimental controller, not a collision avoidance system.
-"""
 import argparse
 import base64
 from datetime import datetime, timezone
-from functools import partial
 import io
 import json
 from pathlib import Path
 import threading
 import time
 import urllib.request
+
 import numpy as np
 from PIL import Image as PILImage
 import rclpy
@@ -26,12 +23,10 @@ from policy_connection import wait_for_policy
 INSTRUCTION = "Pick up the red cube, return to the initial arm pose, and hold it."
 
 JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "r_joint"]
-# Conservative target-rate limits inherited from the existing live controller.
-MAX_TARGET_SPEED = np.array([0.5, 1.3, 0.9, 0.7, 0.7, 1.5])
 
 
 class ObservationPending(RuntimeError):
-    """A transient input gap; reset/nonfinite-state errors must not be retried."""
+    """Temporary gap in synchronized camera, joint or clock data."""
 
 
 def wait_for_arm_subscriber(publisher, timeout=10.0):
@@ -50,12 +45,6 @@ def wait_for_arm_subscriber(publisher, timeout=10.0):
             )
         time.sleep(0.05)
     print("[ARM READY] /arm_joint_commands subscriber connected.", flush=True)
-
-
-def limit_target(target, previous, dt, *, gripper_max=1.5):
-    bounded = np.clip(target, [-2.08] * 5 + [0.0], [2.08] * 5 + [gripper_max])
-    rates = MAX_TARGET_SPEED * min(dt, 0.05)
-    return previous + np.clip(bounded - previous, -rates, rates)
 
 
 class Bridge(Node):
@@ -208,7 +197,6 @@ def parse_args():
     parser.add_argument("--clock-topic", default="/clock")
     parser.add_argument("--command-topic", default="/arm_joint_commands")
     parser.add_argument("--joint-names", nargs=6, default=JOINTS.copy())
-    parser.add_argument("--gripper-max", type=float, default=1.5)
     parser.add_argument(
         "--prompt", default=INSTRUCTION, help="Language instruction sent to the policy"
     )
@@ -244,8 +232,6 @@ def parse_args():
         parser.error("server-timeout must be in (0,600]")
     if len(set(args.joint_names)) != 6:
         parser.error("joint-names must be unique in model vector order")
-    if not np.isfinite(args.gripper_max) or not 0 < args.gripper_max <= 1.5:
-        parser.error("gripper-max must be in (0,1.5]")
     return args
 
 
@@ -325,9 +311,36 @@ def wait_for_action_tick(node, previous_tick, observation_epoch):
         time.sleep(0.002)
 
 
+def check_arm_tracking(actual, command, stamp, exceeded_since, record):
+    error = actual[:5] - command[:5]
+    worst = int(np.argmax(np.abs(error)))
+    if abs(error[worst]) > 0.3:
+        if exceeded_since is None:
+            return stamp
+        if stamp - exceeded_since < 1_000_000_000:
+            return exceeded_since
+    else:
+        return None
+
+    joint = JOINTS[worst]
+    record(
+        {
+            "event": "error",
+            "reason": "tracking",
+            "joint": joint,
+            "actual": actual.tolist(),
+            "last_sent": command.tolist(),
+            "error_rad": error.tolist(),
+        }
+    )
+    raise RuntimeError(
+        f"Arm tracking: {joint} actual={actual[worst]:.6f}, "
+        f"command={command[worst]:.6f}, error={error[worst]:+.6f} rad >0.30 for 1 sim second"
+    )
+
+
 def main():
     args = parse_args()
-    limit = partial(limit_target, gripper_max=args.gripper_max)
     server_info = connect_policy(args)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     args.output.mkdir(parents=True, exist_ok=True)
@@ -349,7 +362,6 @@ def main():
         wall_start = time.monotonic()
         iteration = 0
         tracking_since = None
-        args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x", encoding="utf-8") as log:
 
             def record(data):
@@ -365,9 +377,7 @@ def main():
                     "seed": args.seed,
                     "server": server_info,
                     "initial_state": q.tolist(),
-                    "max_target_speed_rad_s": MAX_TARGET_SPEED.tolist(),
                     "ros_joint_names": node.ros_joint_names,
-                    "gripper_max_rad": args.gripper_max,
                     "topics": dict(
                         image=args.image_topic,
                         joints=args.joint_topic,
@@ -389,9 +399,8 @@ def main():
             while True:
                 rgb, q, stamp = node.snapshot()
                 observation_epoch = node.recovery_id
-                if (
-                    stamp - start
-                ) / 1e9 >= args.seconds or time.monotonic() - wall_start > 600:
+                sim_elapsed = (stamp - start) / 1e9
+                if sim_elapsed >= args.seconds or time.monotonic() - wall_start > 600:
                     break
                 image_path = image_dir / f"{iteration:04d}.png"
                 actions, request_start = predict_actions(
@@ -428,9 +437,7 @@ def main():
                     flush=True,
                 )
                 if np.max(np.abs(current - q)) > 0.1:
-                    # The arm can still converge to the last published target
-                    # while synchronous inference runs. Observation delta alone
-                    # is not a tracking failure; compare against last below.
+                    # The arm can continue moving toward the last command during inference.
                     record(
                         {
                             "event": "inference_motion",
@@ -446,7 +453,6 @@ def main():
                         flush=True,
                     )
                     break
-                # Receding-horizon execution. Inference remains synchronous; log its hold gaps.
                 tick = now
                 for action_index, target in enumerate(actions[: args.chunk_steps]):
                     observation = wait_for_action_tick(node, tick, observation_epoch)
@@ -463,35 +469,13 @@ def main():
                     current, now = observation
                     if (now - start) / 1e9 >= args.seconds:
                         break
-                    dt = min((now - tick) / 1e9, 0.05)
+                    dt = (now - tick) / 1e9
                     tick = now
-                    error = current[:5] - last[:5]
-                    worst = int(np.argmax(np.abs(error)))
-                    tracking_since = (
-                        (now if tracking_since is None else tracking_since)
-                        if abs(error[worst]) > 0.3
-                        else None
+                    tracking_since = check_arm_tracking(
+                        current, last, now, tracking_since, record
                     )
-                    if (
-                        tracking_since is not None
-                        and now - tracking_since >= 1_000_000_000
-                    ):
-                        record(
-                            {
-                                "event": "error",
-                                "reason": "tracking",
-                                "joint": JOINTS[worst],
-                                "actual": current.tolist(),
-                                "last_sent": last.tolist(),
-                                "error_rad": error.tolist(),
-                            }
-                        )
-                        raise RuntimeError(
-                            f"Arm tracking: {JOINTS[worst]} actual={current[worst]:.6f}, "
-                            f"command={last[worst]:.6f}, error={error[worst]:+.6f} rad >0.30 for 1 sim second"
-                        )
-                    last = limit(target, last, dt)
-                    node.command(last, now)
+                    node.command(target, now)
+                    last = target
                     started = True
                     record(
                         {
@@ -501,9 +485,7 @@ def main():
                             "sim_ns": now,
                             "dt_s": dt,
                             "actual": current.tolist(),
-                            "target": target.tolist(),
                             "sent": last.tolist(),
-                            "target_modified_rad": (last - target).tolist(),
                         }
                     )
             record(
@@ -526,8 +508,7 @@ def main():
         if started:
             try:
                 _, current, stamp = node.snapshot()
-                # Normal completion retains all six final policy targets while
-                # the base returns. On error, stop arm motion at measured pose.
+                # Keep the last grasp during base return or after an arm error.
                 if completed:
                     current = last.copy()
                 else:
